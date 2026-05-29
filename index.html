@@ -20938,33 +20938,16 @@ async function sbGetAllNotifications() {
 async function sbPushClient(clientId) {
   const c = clients.find(x=>x.id===clientId);
   if (!c) throw new Error('Client not found');
-  const slim = {
-    id:c.id,name:c.name,fname:c.fname||c.name.split(' ')[0],
-    injury:c.injury,sport:c.sport,side:c.side,
-    injDate:c.injDate,rehabStartDate:c.rehabStartDate,
-    returnDate:c.returnDate,surgeon:c.surgeon,
-    avBg:c.avBg,avColor:c.avColor,initials:c.initials,
-    programs:(c.programs||[]).map(p=>{return {
-      id:p.id,startDate:p.startDate,phases:p.phases||[],
-      sessions:(p.sessions||[]).map(s=>{return {
-        title:s.title,scheduledDate:s.scheduledDate,
-        phaseIdx:s.phaseIdx,sessionCategory:s.sessionCategory,
-        blockRestSecs:s.blockRestSecs,note:s.note,
-        completed:s.completed||false,
-        blocks:(s.blocks||[]).map(b=>{return {
-          category:b.category,customName:b.customName||null,
-          drills:(b.drills||[]).map(d=>{return {
-            n:d.name||d.n,sets:d.sets,reps:d.reps,
-            dist:d.dist||null,spd:d.spd||null,rest:d.rest||null
-          }})
-        }})
-      }}),gymPrograms:[]
-    }})
-  };
+  // Push the full client record so the cloud copy is a faithful backup and the
+  // athlete receives the complete program. Drill media lives on the shared
+  // LIBRARY by reference (not inline on program drills), so the full record
+  // carries no large base64 payloads. Previously a hand-built "slim" subset was
+  // sent, which silently dropped gym programs, drill icons/categories/notes,
+  // load benchmarks and more — making the cloud an incomplete, unrecoverable copy.
   const r = await fetch(SB_URL+'/rest/v1/clients',{
     method:'POST',
     headers:{...sbH(),'Prefer':'resolution=merge-duplicates,return=representation'},
-    body:JSON.stringify({id:clientId,physio_key:getPhysioKey(),data:slim,updated_at:new Date().toISOString()})
+    body:JSON.stringify({id:clientId,physio_key:getPhysioKey(),data:c,updated_at:new Date().toISOString()})
   });
   if (!r.ok) throw new Error('Supabase '+(await r.text()).slice(0,80));
   // Save ID to known list for recovery
