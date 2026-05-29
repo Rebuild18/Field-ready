@@ -3460,6 +3460,12 @@ function localDateToIso(d) {
   return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
 }
 
+// Stable unique id, with a fallback for browsers without crypto.randomUUID.
+function genId() {
+  return (crypto.randomUUID && crypto.randomUUID()) ||
+         (Date.now().toString(36) + Math.random().toString(36).slice(2));
+}
+
 // ── Program anchor date — single source of truth for phase week calculations ──
 // Priority: prog.startDate > c.rehabStartDate > c.injDate > today
 function getProgAnchorDate(c, prog) {
@@ -20944,6 +20950,12 @@ async function sbPushClient(clientId) {
   // carries no large base64 payloads. Previously a hand-built "slim" subset was
   // sent, which silently dropped gym programs, drill icons/categories/notes,
   // load benchmarks and more — making the cloud an incomplete, unrecoverable copy.
+  // Stamp a stable id on each session before sharing so the physio and athlete
+  // agree on session identity. The athlete reuses this id when pushing results,
+  // letting sbSyncResults match completions by id rather than guessing by date
+  // (which can't tell two same-date sessions, e.g. AM + PM, apart).
+  (c.programs||[]).forEach(p => (p.sessions||[]).forEach(s => { if (!s.id) s.id = genId(); }));
+  saveToStorage();
   const r = await fetch(SB_URL+'/rest/v1/clients',{
     method:'POST',
     headers:{...sbH(),'Prefer':'resolution=merge-duplicates,return=representation'},
@@ -23270,43 +23282,45 @@ async function sbSyncResults(clientId, silent=false) {
       return 0;
     }
     let updated = 0;
+    // Flatten local sessions once so we can find a single best match per cloud row.
+    const localSessions = (c.programs||[]).flatMap(prog => prog.sessions||[]);
     rows.forEach(row => {
       const rs = row.data;
       // Must be a completed session object
       if (!rs || !rs.completed) return;
       const rowDate = rs.scheduledDate || row.scheduled_date || '';
 
-      (c.programs||[]).forEach(prog => {
-        (prog.sessions||[]).forEach(local => {
-          if (local.completed) return; // already done, skip
-          // Match by scheduledDate (primary) with flexible date comparison
-          const localDate = local.scheduledDate || '';
+      // Prefer matching by stable session id (set at share time). Two same-date
+      // sessions (e.g. AM + PM) have distinct ids, so this avoids the date-based
+      // ambiguity. Fall back to date/title only for legacy sessions with no id.
+      let local = rs.id ? localSessions.find(s => s.id === rs.id) : null;
+      if (!local) {
+        local = localSessions.find(s => {
+          if (s.completed) return false;
+          const localDate = s.scheduledDate || '';
           const dateMatch = localDate && rowDate &&
-            (localDate === rowDate ||
-             localDate.slice(0,10) === rowDate.slice(0,10));
-          // Also try title match as fallback
-          const titleMatch = rs.title && local.title &&
-            rs.title.trim().toLowerCase() === local.title.trim().toLowerCase();
-
-          if (dateMatch || (titleMatch && !dateMatch)) {
-            const wasCompleted = local.completed;
-            // Merge completion data from cloud
-            local.completed        = true;
-            local.completedAt      = rs.completedAt  || Date.now();
-            local.rpe              = rs.rpe           ?? local.rpe;
-            local.painScore        = rs.painScore     ?? local.painScore;
-            local.sessionNotes     = rs.sessionNotes  || local.sessionNotes;
-            local.sessionMins      = rs.sessionMins   ?? local.sessionMins;
-            local.sessionLoad      = rs.sessionLoad   ?? local.sessionLoad;
-            local.drillLogs        = rs.drillLogs     || local.drillLogs;
-            local.contactLogs      = rs.contactLogs   || local.contactLogs;
-            local.contactLoad      = rs.contactLoad   ?? local.contactLoad;
-            local.voiceSummary     = rs.voiceSummary  || local.voiceSummary;
-            local.notesFlagged     = rs.notesFlagged  || false;
-            if (!wasCompleted) updated++;
-          }
+            (localDate === rowDate || localDate.slice(0,10) === rowDate.slice(0,10));
+          const titleMatch = rs.title && s.title &&
+            rs.title.trim().toLowerCase() === s.title.trim().toLowerCase();
+          return dateMatch || titleMatch;
         });
-      });
+      }
+      if (!local || local.completed) return; // no match, or already done
+
+      // Merge completion data from cloud
+      local.completed        = true;
+      local.completedAt      = rs.completedAt  || Date.now();
+      local.rpe              = rs.rpe           ?? local.rpe;
+      local.painScore        = rs.painScore     ?? local.painScore;
+      local.sessionNotes     = rs.sessionNotes  || local.sessionNotes;
+      local.sessionMins      = rs.sessionMins   ?? local.sessionMins;
+      local.sessionLoad      = rs.sessionLoad   ?? local.sessionLoad;
+      local.drillLogs        = rs.drillLogs     || local.drillLogs;
+      local.contactLogs      = rs.contactLogs   || local.contactLogs;
+      local.contactLoad      = rs.contactLoad   ?? local.contactLoad;
+      local.voiceSummary     = rs.voiceSummary  || local.voiceSummary;
+      local.notesFlagged     = rs.notesFlagged  || false;
+      updated++;
     });
     if (updated > 0) {
       saveToStorage();
